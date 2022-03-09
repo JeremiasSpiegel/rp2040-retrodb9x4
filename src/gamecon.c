@@ -34,17 +34,45 @@
 
 void hid_task(void);
 
+typedef union joygpio_cfg {
+    struct {
+        uint8_t up;
+        uint8_t down;
+        uint8_t left;
+        uint8_t right;
+        uint8_t fire1;
+        uint8_t fire2;
+    };
+    uint8_t gpio[6];
+} joygpio_cfg;
+
+joygpio_cfg cfg[] = {
+    { 0, 1, 2, 3, 4, 5 },
+    { 5, 6, 7, 8, 9, 10 },
+    { 11, 12, 13, 14, 15, 16 },
+    { 18, 19, 20, 21, 22, 26 }    
+};
+
+
 struct report
 {
-    uint16_t buttons;
+    uint8_t buttons;
     uint8_t joy0;
     uint8_t joy1;
-    uint8_t joy2;
-    uint8_t joy3;
-} report;
+};
+
+struct report reports[4];
 
 int main(void)
 {
+    for (int i = 0; i < CFG_TUD_HID; i++) {
+        for (int j = 0; j < 6; j++) {
+            int gpio = cfg[i].gpio[j];
+            gpio_init(gpio);
+            gpio_set_dir(gpio, GPIO_IN);
+            gpio_pull_up(gpio);
+        }
+    }
 
     board_init();
 
@@ -74,7 +102,7 @@ int main(void)
 
 void con_panic(uint16_t errcode)
 {
-    report.buttons = errcode;
+    reports[0].buttons = errcode;
     while (1)
     {
         tud_task(); // tinyusb device task
@@ -88,25 +116,12 @@ void con_panic(uint16_t errcode)
 
         if (tud_hid_ready())
         {
-            tud_hid_n_report(0x00, 0x01, &report, sizeof(report));
+            for (int i = 0; i < CFG_TUD_HID; i++) {
+                tud_hid_n_report(i, 0x01, &reports[i], sizeof(struct report));
+            }
         }
     }
 }
-
-typedef struct
-{
-    uint8_t r, g, b;
-} RGB_t;
-
-union
-{
-    struct
-    {
-        uint8_t buttons[16];
-        RGB_t rgb[3];
-    } lights;
-    uint8_t raw[25];
-} light_data;
 
 void hid_task(void)
 {
@@ -117,14 +132,14 @@ void hid_task(void)
     if (board_millis() - start_ms < interval_ms)
         return; // not enough time
     start_ms += interval_ms;
-
-    report.buttons = ((board_millis() / 1000) % 2) << ((board_millis() / 2000) % 16);
-    report.joy0 = light_data.lights.rgb[2].g;
-    report.joy1 = light_data.lights.rgb[2].b;
-    report.joy2 = ((board_millis() / 1000) % 4) * 64;
-    report.joy3 = board_millis() / 2;
-    int fade = report.joy1;
-    pwm_set_gpio_level(PICO_DEFAULT_LED_PIN, fade * fade);
+    
+    for (int i = 0; i < CFG_TUD_HID; i++) {
+        joygpio_cfg *c = &cfg[i];
+        reports[i].buttons = gpio_get(c->fire1) ? 0 : (1 << 0);
+        reports[i].buttons |= gpio_get(c->fire2) ? 0 : (1 << 1);
+        reports[i].joy0 = !gpio_get(c->left) ? 0 : (!gpio_get(c->right) ? 255 : 128);
+        reports[i].joy1 = !gpio_get(c->up) ? 0 : (!gpio_get(c->down) ? 255 : 128);
+    }
 
     // Remote wakeup
     if (tud_suspended())
@@ -136,7 +151,9 @@ void hid_task(void)
 
     if (tud_hid_ready())
     {
-        tud_hid_n_report(0x00, 0x01, &report, sizeof(report));
+        for (int i = 0; i < CFG_TUD_HID; i++) {
+            tud_hid_n_report(i, 0x01, &reports[i], sizeof(struct report));
+        }
     }
 }
 
@@ -189,15 +206,4 @@ uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id, hid_report_t
 // received data on OUT endpoint ( Report ID = 0, Type = 0 )
 void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_t report_type, uint8_t const *buffer, uint16_t bufsize)
 {
-    if (report_id == 2 && report_type == HID_REPORT_TYPE_OUTPUT && buffer[0] == 2 && bufsize >= sizeof(light_data)) //light data
-    {
-        size_t i = 0;
-        for (i; i < sizeof(light_data); i++)
-        {
-            light_data.raw[i] = buffer[i + 1];
-        }
-    }
-
-    // echo back anything we received from host
-    tud_hid_report(0, buffer, bufsize);
 }
